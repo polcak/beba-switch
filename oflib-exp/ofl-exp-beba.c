@@ -2040,15 +2040,15 @@ bool retrieve_condition_operand(uint32_t *operand_value, uint8_t operand_type, u
             }
             switch (field_len){
                 case 4:{
-                    *operand_value = (uint32_t) *((uint32_t*) key);
+                    memcpy(operand_value,key,4);
                     break;
                 }
                 case 2:{
-                    *operand_value = (uint32_t) (*((uint16_t*) key));
+                    memcpy(operand_value,key,2);
                     break;
                 }
                 case 1:{
-                    *operand_value = (uint32_t)  *((uint8_t*) key);
+                    memcpy(operand_value,key,1);
                     break;
                 }
             }
