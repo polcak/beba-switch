@@ -64,9 +64,11 @@ dp_exp_action(struct packet *pkt, struct ofl_action_experimenter *act) {
             case(OFPAT_EXP_SET_STATE):
             {
                 struct ofl_exp_action_set_state *wns = (struct ofl_exp_action_set_state *)action;
-                if (state_table_is_stateful(pkt->dp->pipeline->tables[wns->table_id]->state_table) && state_table_is_configured(pkt->dp->pipeline->tables[wns->table_id]->state_table))
+                struct state_table *st = pkt->dp->pipeline->tables[wns->table_id]->state_table;
+                
+                if (state_table_is_stateful(st) && state_table_is_configured(st))
                 {
-                    struct state_table *st = pkt->dp->pipeline->tables[wns->table_id]->state_table;
+                    struct state_table *st = st;
                     VLOG_DBG_RL(LOG_MODULE, &rl, "executing action NEXT STATE at stage %u", wns->table_id);
 
                     // State Sync: Get the new state, encoded in ntf_message, and pack a message to be sent via dp_send_message.

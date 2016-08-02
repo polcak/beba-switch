@@ -764,7 +764,7 @@ ofl_exp_beba_act_unpack(struct ofp_action_header const *src, size_t *len, struct
             da->header.act_type = ntohl(ext->act_type);
             *dst = (struct ofl_action_header *)da;
 
-            if (*len < sizeof(struct ofp_exp_action_set_state)) {
+            if (*len < sizeof(struct ofp_exp_action_set_state) + ROUND_UP(sizeof(uint32_t)*(ntohl(sa->field_count)),8) ) {
                 OFL_LOG_WARN(LOG_MODULE, "Received SET STATE action has invalid length (%zu).", *len);
                 return ofl_error(OFPET_EXPERIMENTER, OFPEC_BAD_EXP_LEN);
             }
@@ -785,8 +785,12 @@ ofl_exp_beba_act_unpack(struct ofp_action_header const *src, size_t *len, struct
             da->idle_rollback = ntohl(sa->idle_rollback);
             da->hard_timeout = ntohl(sa->hard_timeout);
             da->idle_timeout = ntohl(sa->idle_timeout);
+            da->field_count=ntohl(sa->field_count);
 
-            *len -= sizeof(struct ofp_exp_action_set_state);
+            for (i=0;i<da->field_count;i++)
+                da->fields[i]=ntohl(sa->fields[i]);
+            
+            *len -= sizeof(struct ofp_exp_action_set_state) + ROUND_UP(sizeof(uint32_t)*(da->field_count),8);
             break;
         }
 
@@ -850,10 +854,15 @@ ofl_exp_beba_act_pack(struct ofl_action_header const *src, struct ofp_action_hea
             da->idle_rollback = htonl(sa->idle_rollback);
             da->hard_timeout = htonl(sa->hard_timeout);
             da->idle_timeout = htonl(sa->idle_timeout);
-            memset(da->pad2, 0x00, 4);
-            dst->len = htons(sizeof(struct ofp_exp_action_set_state));
+            da->field_count = htonl(sa->field_count);
+            
+            for (i=0;i<sa->field_count;i++)
+                da->fields[i] = htonl(sa->fields[i]);
+            
+            //ROUND_UP to 8 bytes
+            dst->len = htons(sizeof(struct ofp_exp_action_set_state) + ROUND_UP(sizeof(uint32_t)*(sa->field_count),8));
 
-            return sizeof(struct ofp_exp_action_set_state);
+            return sizeof(struct ofp_exp_action_set_state) + ROUND_UP(sizeof(uint32_t)*(sa->field_count),8);
         }
         case (OFPAT_EXP_SET_GLOBAL_STATE):
         {
@@ -882,7 +891,9 @@ ofl_exp_beba_act_ofp_len(struct ofl_action_header const *act)
 
     switch (ext->act_type) {
         case (OFPAT_EXP_SET_STATE):
-            return sizeof(struct ofp_exp_action_set_state);
+            struct ofl_exp_action_set_state *sa = (struct ofl_exp_action_set_state *) act;
+            //ROUND_UP to 8 bytes
+            return sizeof(struct ofp_exp_action_set_state) + ROUND_UP(sizeof(uint32_t)*(sa->field_count),8);
         case (OFPAT_EXP_SET_GLOBAL_STATE):
             return sizeof(struct ofp_exp_action_set_global_state);
         default:
@@ -902,6 +913,7 @@ ofl_exp_beba_act_to_string(struct ofl_action_header const *act)
             struct ofl_exp_action_set_state *a = (struct ofl_exp_action_set_state *)ext;
             char *string = malloc(200);
             sprintf(string, "{set_state=[state=\"%u\",state_mask=\"%"PRIu32"\",table_id=\"%u\",idle_to=\"%u\",hard_to=\"%u\",idle_rb=\"%u\",hard_rb=\"%u\"]}", a->state, a->state_mask, a->table_id,a->idle_timeout,a->hard_timeout,a->idle_rollback,a->hard_rollback);
+            //TODO Davide: print parametric key fields (if any)
             return string;
         }
         case (OFPAT_EXP_SET_GLOBAL_STATE):
@@ -2331,7 +2343,30 @@ ofl_err state_table_set_state(struct state_table *table, struct packet *pkt,
 
     int i;
     uint32_t key_len=0; //update-scope key extractor length
+
+    // State updates are based on the configure update-scope for both SET_STATE action and SET_FLOW_STATE msg...
     struct key_extractor *extractor=&table->write_key;
+    // ... but, in case of SET_STATE action, the update-scope might be specified in the action itself
+    if (pkt){
+        //SET_STATE action
+        if (act->field_count>0){
+            //TODO Davide: it's better to check for a mismatch in the actual total key length
+            if (act->field_count!=table->write_key.field_count){
+                OFL_LOG_WARN(LOG_MODULE, "key extractor length != hardcoded key length");
+                return ofl_error(OFPET_EXPERIMENTER, OFPEC_BAD_EXP_LEN);
+            }
+
+            struct key_extractor dummy_key_extract;
+            dummy_key_extract.table_id = pkt->table_id;
+            dummy_key_extract.field_count = act->field_count;
+            for (i=0;i<act->field_count;i++)
+                dummy_key_extract.fields[i]=act->fields[i];
+            
+            extractor = &dummy_key_extract;
+        }
+
+    }
+
     for (i=0; i<extractor->field_count; i++)
     {
         uint32_t type = (int)extractor->fields[i];
@@ -2348,7 +2383,8 @@ ofl_err state_table_set_state(struct state_table *table, struct packet *pkt,
         idle_timeout = act->idle_timeout;
         hard_timeout = act->hard_timeout;
 
-        if(!__extract_key(key, &table->write_key, pkt)){
+        // extractor is now the configured update-scope or the update-scope specified in the action
+        if(!__extract_key(key, extractor, pkt)){
             OFL_LOG_DBG(LOG_MODULE, "lookup key fields not found in the packet's header");
             return res;
         }

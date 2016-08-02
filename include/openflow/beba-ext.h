@@ -79,7 +79,8 @@ struct ofp_exp_action_set_state {
     uint32_t idle_rollback;
     uint32_t hard_timeout;
     uint32_t idle_timeout;
-    uint8_t pad2[4];   /* Align to 64-bits. */
+    uint32_t field_count;
+    uint32_t fields[0]; // variable number of fields (sizeof() ignores flexible arrays)
 };
 OFP_ASSERT(sizeof(struct ofp_exp_action_set_state) == 48);
 
