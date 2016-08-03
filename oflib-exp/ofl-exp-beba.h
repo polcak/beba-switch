@@ -9,9 +9,6 @@
 #include "../include/openflow/beba-ext.h"
 
 
-#define MAX_EXTRACTION_FIELD_COUNT 6
-#define MAX_STATE_KEY_LEN 48
-
 #define STATE_DEFAULT 0
 /**************************************************************************/
 /*                        experimenter messages ofl_exp                   */
@@ -135,6 +132,7 @@ struct ofl_exp_state_entry{
     uint32_t            key_len;
     uint8_t             key[OFPSC_MAX_KEY_LEN];
     uint32_t            state;
+    uint32_t            flow_data_var[OFPSC_MAX_FLOW_DATA_VAR_NUM];
 };
 
 struct ofl_exp_state_stats {
@@ -242,14 +240,14 @@ struct condition_table_entry {
 struct key_extractor {
     uint8_t                     table_id;
     uint32_t                    field_count;
-    uint32_t                    fields[MAX_EXTRACTION_FIELD_COUNT];
+    uint32_t                    fields[OFPSC_MAX_FIELD_COUNT];
 };
 
 struct state_entry {
     struct hmap_node            hmap_node;
     struct hmap_node            hard_node;
     struct hmap_node            idle_node;
-    uint8_t                     key[MAX_STATE_KEY_LEN];
+    uint8_t                     key[OFPSC_MAX_KEY_LEN];
     uint32_t                    state;
     uint32_t                    flow_data_var[OFPSC_MAX_FLOW_DATA_VAR_NUM];
 
