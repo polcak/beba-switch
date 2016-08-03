@@ -802,6 +802,7 @@ ofl_exp_beba_act_unpack(struct ofp_action_header const *src, size_t *len, struct
     switch (ntohl(ext->act_type)) {
         case (OFPAT_EXP_SET_STATE):
         {
+            // At unpack time we do NOT check if stage is stateful and state table is configured: those checks are run at action execution time
             struct ofp_exp_action_set_state *sa;
             struct ofl_exp_action_set_state *da;
 
@@ -865,6 +866,7 @@ ofl_exp_beba_act_unpack(struct ofp_action_header const *src, size_t *len, struct
         }
         case (OFPAT_EXP_SET_DATA_VAR):
         {
+            // At unpack time we do NOT check if stage is stateful and state table is configured: those checks are run at action execution time
             struct ofp_exp_action_set_data_variable *sa;
             struct ofl_exp_action_set_data_variable *da;
             int i;
@@ -2266,45 +2268,40 @@ state_table_timeout(struct state_table *table)
     }
 }
 
-bool retrieve_condition_operand(uint32_t *operand_value, uint8_t operand_type, uint8_t operand_id, uint8_t operand_num, struct state_table *state_table, struct packet *pkt){    
+bool retrieve_operand(uint32_t *operand_value, uint8_t operand_type, uint8_t operand_id, char * operand_name, struct state_table *table, struct packet *pkt, struct key_extractor *extractor){
+    // Operands IDs validity has been already checked at unpack time
     uint8_t key[OFPSC_MAX_KEY_LEN] = {0};
     struct state_entry * state_entry;
     uint8_t field_len;
 
-    switch(operand_type){
+    switch(operand_type){ 
         case OPERAND_TYPE_FLOW_DATA_VAR:{
-            if (operand_id >= OFPSC_MAX_FLOW_DATA_VAR_NUM){
-                return false;
-            }
-            state_entry = state_table_lookup(state_table, pkt);
+            // State table configuration has been already verified
+            state_entry = state_table_lookup_from_scope(table,pkt,extractor);
             if(state_entry==NULL){
                 return false;
             } else {
+                //in case state_entry==DEFAULT ENTRY, flow_data_var are all set to 0
                 *operand_value = (uint32_t) state_entry->flow_data_var[operand_id];
             }
             break;}
         case OPERAND_TYPE_GLOBAL_DATA_VAR:{
-            if (operand_id >= OFPSC_MAX_GLOBAL_DATA_VAR_NUM){
-                return false;
-            }
-            *operand_value = (uint32_t) state_table->global_data_var[operand_id];
+            *operand_value = (uint32_t) table->global_data_var[operand_id];
             break;}
         case OPERAND_TYPE_HEADER_FIELD:{
-            if (operand_id >= OFPSC_MAX_HEADER_FIELDS){
-                return false;
-            }
-            if (state_table->header_field_extractor[operand_id].field_count!=1){
+            if (table->header_field_extractor[operand_id].field_count!=1){
+                OFL_LOG_DBG(LOG_MODULE, "SET DATA VAR action: header field exractor not configured (%s) (%u).", operand_name, operand_id );
                 return false;
             }
 
-            if(!__extract_key(key, &state_table->header_field_extractor[operand_id], pkt))
+            if(!__extract_key(key, &table->header_field_extractor[operand_id], pkt))
                 {
-                    OFL_LOG_DBG(LOG_MODULE, "Header field %"PRIu32" not found in the packet's header -> -1",state_table->header_field_extractor[operand_id].fields[0]);
+                    OFL_LOG_DBG(LOG_MODULE, "Header field not found in the packet's header -> NULL");
                     return false;
                 }
             
-            field_len = OXM_LENGTH(state_table->header_field_extractor[operand_id].fields[0]);
-            if (OXM_VENDOR(state_table->header_field_extractor[operand_id].fields[0])==0xffff){
+            field_len = OXM_LENGTH(table->header_field_extractor[operand_id].fields[0]);
+            if (OXM_VENDOR(table->header_field_extractor[operand_id].fields[0])==0xffff){
                 field_len -= EXP_ID_LEN;
             }
             switch (field_len){
@@ -2321,10 +2318,12 @@ bool retrieve_condition_operand(uint32_t *operand_value, uint8_t operand_type, u
                     break;
                 }
             }
-            break;
-        }
+            break;}
+        case OPERAND_TYPE_CONSTANT:{
+            *operand_value = (uint32_t) operand_id;
+            break;}
     }
-    OFL_LOG_DBG(LOG_MODULE, "operand_%u_value=%"PRIu32"",operand_num,*operand_value);
+    OFL_LOG_DBG(LOG_MODULE, "%s_value=%"PRIu32"",operand_name,*operand_value);
     return true;
 }
 
@@ -2332,11 +2331,11 @@ int state_table_evaluate_condition(struct state_table *state_table,struct packet
     //Comparison is made by converting fields value to integers. Header field extractors always refer to field of length <=32 bit
     uint32_t operand_1_value = 0;
     uint32_t operand_2_value = 0;
-
-    if (!retrieve_condition_operand(&operand_1_value, condition_table_entry->operand_1_type, condition_table_entry->operand_1, 1, state_table, pkt))
+    
+    if (!retrieve_operand(&operand_1_value, condition_table_entry->operand_1_type, condition_table_entry->operand_1, "condition_operand_1", state_table, pkt, &state_table->read_key))
         return -1;
 
-    if (!retrieve_condition_operand(&operand_2_value, condition_table_entry->operand_2_type, condition_table_entry->operand_2, 2, state_table, pkt))
+    if (!retrieve_operand(&operand_2_value, condition_table_entry->operand_2_type, condition_table_entry->operand_2, "condition_operand_2", state_table, pkt, &state_table->read_key))
         return -1;
 
     switch(condition_table_entry->condition){
@@ -2365,34 +2364,33 @@ int state_table_evaluate_condition(struct state_table *state_table,struct packet
     return -1;
 }
 
-/*having the read_key, look for the state vaule inside the state_table */
-struct state_entry * state_table_lookup(struct state_table* table, struct packet *pkt)
-{
-    struct state_entry * e = NULL;
-    uint8_t key[MAX_STATE_KEY_LEN] = {0};
+/*having the write_key, look for the state vaule inside the state_table */
+struct state_entry * state_table_lookup_from_scope(struct state_table* table, struct packet *pkt, struct key_extractor* key_extract) {
+    struct state_entry * e = NULL;  
+    uint8_t key[OFPSC_MAX_KEY_LEN] = {0};
     struct timeval tv;
 
-    if(!__extract_key(key, &table->read_key, pkt))
+    if(!__extract_key(key, key_extract, pkt))
     {
-        OFL_LOG_DBG(LOG_MODULE, "lookup key fields not found in the packet's header -> NULL");
+        OFL_LOG_DBG(LOG_MODULE, "state_table_lookup: update key fields not found in the packet's header -> NULL");
         return NULL;
     }
-
-    HMAP_FOR_EACH_WITH_HASH(e, struct state_entry,
-        hmap_node, hash_bytes(key, MAX_STATE_KEY_LEN, 0), &table->state_entries){
-            if (!memcmp(key, e->key, MAX_STATE_KEY_LEN)){
-                OFL_LOG_DBG(LOG_MODULE, "found corresponding state %u",e->state);
+    
+    HMAP_FOR_EACH_WITH_HASH(e, struct state_entry, 
+        hmap_node, hash_bytes(key, OFPSC_MAX_KEY_LEN, 0), &table->state_entries){
+            if (!memcmp(key, e->key, OFPSC_MAX_KEY_LEN)){
+                OFL_LOG_DBG(LOG_MODULE, "state_table_lookup: found corresponding state %u | %u %u %u %u",e->state,e->flow_data_var[0],e->flow_data_var[1],e->flow_data_var[2],e->flow_data_var[3]);
 
                 //check if the hard_timeout of matched state entry has expired
                 if ((e->stats->hard_timeout>0) && state_entry_hard_timeout(table,e)) {
                     if (e->state==STATE_DEFAULT)
-                        e = NULL;
+                        return &table->default_state_entry;
                     break;
                 }
                 //check if the idle_timeout of matched state entry has expired
                 if ((e->stats->idle_timeout>0) && state_entry_idle_timeout(table,e)) {
                     if (e->state==STATE_DEFAULT)
-                        e = NULL;
+                        return &table->default_state_entry;
                     break;
                 }
                 gettimeofday(&tv,NULL);
@@ -2402,13 +2400,20 @@ struct state_entry * state_table_lookup(struct state_table* table, struct packet
     }
 
     if (e == NULL)
-    {
-        OFL_LOG_DBG(LOG_MODULE, "not found the corresponding state value");
+    {    
+        OFL_LOG_DBG(LOG_MODULE, "state_table_lookup: not found the corresponding state value. Returning DEF...");
         return &table->default_state_entry;
     }
-    else
+    else 
         return e;
 }
+
+/*having the read_key, look for the state vaule inside the state_table */
+struct state_entry * state_table_lookup(struct state_table* table, struct packet *pkt)
+{
+    return state_table_lookup_from_scope(table,pkt,&table->read_key);
+}
+
 /* having the state value  */
 void state_table_write_state(struct state_entry *entry, struct packet *pkt)
 {
@@ -2523,8 +2528,337 @@ ofl_err state_table_set_condition(struct state_table *table, struct ofl_exp_set_
 }
 
 void state_table_set_data_variable(struct state_table *table, struct ofl_exp_action_set_data_variable *act, struct packet *pkt) {
+    // At unpack time we have checked just operands IDs validity. Now, at action execution time, we need to check if stage is
+    // stateful and state table is configured.
+    uint32_t result1 = 0;
+    uint32_t result2 = 0;
+    uint32_t result3 = 0;
+    uint32_t output_value = 0;
+    uint32_t operand_1_value = 0;
+    uint32_t operand_2_value = 0;
+    uint32_t operand_3_value = 0;
+    uint32_t operand_4_value = 0;
+    //coeff_x are signed integers!
+    int8_t coeff_1 = 0;
+    int8_t coeff_2 = 0;
+    int8_t coeff_3 = 0;
+    int8_t coeff_4 = 0;
+    uint8_t key[OFPSC_MAX_KEY_LEN] = {0}; //used to access state table
+    int i;
+    uint32_t key_len=0; //update-scope key extractor length
+    struct key_extractor *extractor=&table->write_key; //if not specified in the action, updates are done using the preconfigured update-scope
+    struct key_extractor dummy_key_extract;
+
+    // If one of the operands or the output is a FLOW_DATA_VAR....
+    if ((((act->operand_types>>14)&3)==OPERAND_TYPE_FLOW_DATA_VAR) || (((act->operand_types>>12)&3)==OPERAND_TYPE_FLOW_DATA_VAR) || ((act->operand_types>>7)&1)==OPERAND_TYPE_FLOW_DATA_VAR 
+        || ( (act->opcode==OPCODE_AVG || act->opcode==OPCODE_VAR || act->opcode==OPCODE_EWMA || act->opcode==OPCODE_POLY_SUM) && (((act->operand_types>>10)&3)==OPERAND_TYPE_FLOW_DATA_VAR)) 
+        || ( (act->opcode==OPCODE_POLY_SUM) && (((act->operand_types>>8)&3)==OPERAND_TYPE_FLOW_DATA_VAR)) ) {
+
+        // ...state table's extractors must have been configured...
+        if (!state_table_is_configured(table)){
+            OFL_LOG_DBG(LOG_MODULE, "State table's extractors are not configured!");
+            return;
+        }
+
+        // in case hardcoded update-key is specified in the action
+        if (act->field_count>0){
+            if (act->field_count!=table->write_key.field_count){
+                OFL_LOG_WARN(LOG_MODULE, "key extractor length != hardcoded key length");
+                return;
+            }
+
+            dummy_key_extract.table_id = pkt->table_id;
+            dummy_key_extract.field_count = act->field_count;
+            for (i=0;i<act->field_count;i++)
+                dummy_key_extract.fields[i]=act->fields[i];
+            
+            extractor = &dummy_key_extract;
+        }
+
+        for (i=0; i<extractor->field_count; i++) 
+        {
+            uint32_t type = (int)extractor->fields[i];
+            key_len = key_len + OXM_LENGTH(type);
+        }
+
+        if(!__extract_key(key, extractor, pkt)){
+            OFL_LOG_DBG(LOG_MODULE, "update key fields not found in the packet's header");
+            return;
+        }
+    }
+
+    // operand_types=aabbccdde0000000 where aa=operand_1_type, bb=operand_2_type, cc=operand_3_type, dd=operand_4_type and e=output_type
+    if (!retrieve_operand(&operand_1_value, (act->operand_types>>14)&3, act->operand_1, "operand_1", table, pkt, extractor))
+        return;
+
+    if (!retrieve_operand(&operand_2_value, (act->operand_types>>12)&3, act->operand_2, "operand_2", table, pkt, extractor))
+        return;
+
+    // operand_3 is needed only by OPCODE_VAR, OPCODE_EWMA and OPCODE_POLY_SUM
+    if (act->opcode==OPCODE_VAR || act->opcode==OPCODE_EWMA || act->opcode==OPCODE_POLY_SUM) {
+        if (!retrieve_operand(&operand_3_value, (act->operand_types>>10)&3, act->operand_3, "operand_3", table, pkt, extractor))
+            return;
+    }
+
+    // operand_4 and coeff_x are needed only by OPCODE_POLY_SUM
+    if (act->opcode==OPCODE_POLY_SUM){
+        if (!retrieve_operand(&operand_4_value, (act->operand_types>>8)&3, act->operand_4, "operand_4", table, pkt, extractor))
+            return;
+
+        coeff_1 = act->coeff_1;
+        coeff_2 = act->coeff_2;
+        coeff_3 = act->coeff_3;
+        coeff_4 = act->coeff_4;
+    }
+
+    // OPCODE_AVG and OPCODE_VAR needs the current value of "output" operand
+    if (act->opcode==OPCODE_AVG || act->opcode==OPCODE_VAR){
+        if (!retrieve_operand(&output_value, (act->operand_types>>7)&1, act->output, "output", table, pkt, extractor))
+            return;
+    }
+
+    
+    // Calculate result(s)
+    switch(act->opcode){
+        case OPCODE_SUM:{
+            OFL_LOG_DBG(LOG_MODULE, "Executing OPCODE_SUM");
+            // sum( output , in1 , in2) = (OUT1 , IN1 , IN2) has 2 inputs and 1 output
+            // output = in1 + in2
+
+            // TODO Davide: overflows/underflows are handled by the user! => what happens when 'counter' for AVG/VAR overflows is under the user's responsibility!
+            result1 = operand_1_value + operand_2_value;
+            break;}
+        case OPCODE_SUB:{
+            OFL_LOG_DBG(LOG_MODULE, "Executing OPCODE_SUB");
+            // sub( output , in1 , in2) = (OUT1 , IN1 , IN2) has 2 inputs and 1 output
+            // output = in1 - in2
+
+            result1 = operand_1_value - operand_2_value;
+            break;}
+        case OPCODE_MUL:{
+            OFL_LOG_DBG(LOG_MODULE, "Executing OPCODE_MUL");
+            // mul( output , in1 , in2) = (OUT1 , IN1 , IN2) has 2 inputs and 1 output
+            // output = in1 * in2
+            
+            result1 = operand_1_value * operand_2_value;
+            break;}
+        case OPCODE_DIV:{
+            OFL_LOG_DBG(LOG_MODULE, "Executing OPCODE_DIV");
+            // div( output , in1 , in2) = (OUT1 , IN1 , IN2) has 2 inputs and 1 output
+            // output = in1 / in2
+            
+            if (operand_1_value==0)
+                result1 = 0;
+            else if (operand_2_value==0)
+                result1 = 0xffffffff;
+            else
+                result1 = operand_1_value / operand_2_value;
+            break;}
+        case OPCODE_AVG:{
+            OFL_LOG_DBG(LOG_MODULE, "Executing OPCODE_AVG");
+            // avg( [count] , [value_to_be_averaged] , [avg_value]) = (IO1 , IN1 , IO2) has 3 inputs and 2 outputs
+            // output1 = count
+            // output2 = avg(in1);
+
+            // [count] = [count] + 1
+            // [avg_value] = ( [avg_value]*[count] + [value_to_be_averaged] ) / ( [count] + 1 )
+
+            result1 = output_value + 1;
+            result2 = ( (operand_2_value*output_value) + operand_1_value*MULTIPLY_FACTOR ) / (output_value + 1);
+
+            break;}
+        case OPCODE_VAR:{
+            OFL_LOG_DBG(LOG_MODULE, "Executing OPCODE_VAR");
+            // var( [count] , [value_to_be_varianced] , [avg_value] , [var_value]) = (IO1 , IN1 , IO2, IO3) has 4 inputs and 3 outputs
+            // output1 = count
+            // output2 = avg(in1)
+            // output3 = var(in1);
+
+            // [count] = [count] + 1
+            // [avg_value] = ( [avg_value]*[count] + [value_to_be_averaged] ) / ( [count] + 1 )
+            // [var_value] = ( [var_value]*[count] + ([value_to_be_varianced] - [avg_value])*([value_to_be_varianced] - [NEW_avg_value]) ) / ( [count] + 1 )
+
+            /*
+            When [count]=0, [var_value] would be set to [value_to_be_varianced]^2 because the HW would calculate [avg_value] in parallel
+            with [var_value], so [avg_value] used to compute [var_value] would be still 0!
+            Thus, when the first sample is added, [var_value] must be 0!
+            */
+
+            result1 = output_value + 1;
+            result2 = ( (operand_2_value*output_value) + operand_1_value*MULTIPLY_FACTOR ) / (output_value + 1);
+            if (output_value==0)
+                result3 = 0;
+            else
+                result3 = ( (operand_3_value*output_value) + (operand_1_value*MULTIPLY_FACTOR-operand_2_value)*(operand_1_value*MULTIPLY_FACTOR-result2) ) / (output_value + 1);
+
+            break;}
+        case OPCODE_EWMA:{
+            //TODO Davide
+            break;}
+        case OPCODE_POLY_SUM:{
+            OFL_LOG_DBG(LOG_MODULE, "Executing OPCODE_POLY_SUM");
+            // polysum( [count] , [value_to_be_varianced] , [avg_value] , [var_value]) = (OUT1 , IN1 , IN2, IN3, COEFF1, COEFF2, COEFF3, COEFF4) has 8 inputs and 1 output
+            //output = operand_1_value*coeff_1 + operand_2_value*coeff_2 + operand_3_value*coeff_3 + operand_4_value*coeff_4;
+
+            result1 = 0;
+            if (coeff_1<0)
+                result1 -= operand_1_value*abs(coeff_1);
+            else
+                result1 += operand_1_value*coeff_1;
+
+            if (coeff_2<0)
+                result1 -= operand_2_value*abs(coeff_2);
+            else
+                result1 += operand_2_value*coeff_2;
+
+            if (coeff_3<0)
+                result1 -= operand_3_value*abs(coeff_3);
+            else
+                result1 += operand_3_value*coeff_3;
+
+            if (coeff_4<0)
+                result1 -= operand_4_value*abs(coeff_4);
+            else
+                result1 += operand_4_value*coeff_4;
+
+            break;
+        }
+        default:{
+            OFL_LOG_DBG(LOG_MODULE, "SET DATA VAR action has invalid opcode (%u).", act->opcode );
+            return;}
+    }
+
+    // Write results to the corresponding output(s)
+    switch(act->opcode){
+        case OPCODE_SUM:
+        case OPCODE_SUB:
+        case OPCODE_MUL:
+        case OPCODE_DIV:
+        case OPCODE_EWMA:
+        case OPCODE_POLY_SUM:{
+            //result1 is written in output
+            switch((act->operand_types>>7)&1){
+                case OPERAND_TYPE_FLOW_DATA_VAR:{
+                     struct ofl_exp_set_flow_data_variable p = (struct ofl_exp_set_flow_data_variable)
+                               {.table_id = pkt->table_id,
+                                  .flow_data_variable_id = act->output,
+                                  .key_len = key_len,
+                                  .value = result1,
+                                  .mask = 0xFFFFFFFF,
+                                  .key = {}};
+                    memcpy(p.key, key, key_len);
+                    state_table_set_flow_data_variable(table,&p);
+                    break;}
+                case OPERAND_TYPE_GLOBAL_DATA_VAR:{
+                    table->global_data_var[act->output] = result1;
+                    OFL_LOG_DBG(LOG_MODULE, "Global data variable %d updated to %"PRIu32,act->output,table->global_data_var[act->output]);
+                    break;}
+            }
+            break;
+        }
+        case OPCODE_AVG:{
+            //result1 is written in output
+            switch((act->operand_types>>7)&1){
+                case OPERAND_TYPE_FLOW_DATA_VAR:{
+                    struct ofl_exp_set_flow_data_variable p = (struct ofl_exp_set_flow_data_variable)
+                               {.table_id = pkt->table_id,
+                                  .flow_data_variable_id = act->output,
+                                  .key_len = key_len,
+                                  .value = result1,
+                                  .mask = 0xFFFFFFFF,
+                                  .key = {}};
+                    memcpy(p.key, key, key_len);
+                    state_table_set_flow_data_variable(table,&p);
+                    break;}
+                case OPERAND_TYPE_GLOBAL_DATA_VAR:{
+                    table->global_data_var[act->output] = result1;
+                    OFL_LOG_DBG(LOG_MODULE, "Global data variable %d updated to %"PRIu32,act->output,table->global_data_var[act->output]);
+                    break;}
+            }
+
+            //result2 is written in operand_2
+            switch((act->operand_types>>12)&3){
+                case OPERAND_TYPE_FLOW_DATA_VAR:{
+                    struct ofl_exp_set_flow_data_variable p = (struct ofl_exp_set_flow_data_variable)
+                               {.table_id = pkt->table_id,
+                                  .flow_data_variable_id = act->operand_2,
+                                  .key_len = key_len,
+                                  .value = result2,
+                                  .mask = 0xFFFFFFFF,
+                                  .key = {}};
+                    memcpy(p.key, key, key_len);
+                    state_table_set_flow_data_variable(table,&p);
+                    break;}
+                case OPERAND_TYPE_GLOBAL_DATA_VAR:{
+                    table->global_data_var[act->operand_2] = result2;
+                    OFL_LOG_DBG(LOG_MODULE, "Global data variable %d updated to %"PRIu32,act->operand_2,table->global_data_var[act->operand_2]);
+                    break;}
+            }
+            break;
+        }
+        case OPCODE_VAR:{
+            //result1 is written in output
+            switch((act->operand_types>>7)&1){
+                case OPERAND_TYPE_FLOW_DATA_VAR:{
+                    struct ofl_exp_set_flow_data_variable p = (struct ofl_exp_set_flow_data_variable)
+                               {.table_id = pkt->table_id,
+                                  .flow_data_variable_id = act->output,
+                                  .key_len = key_len,
+                                  .value = result1,
+                                  .mask = 0xFFFFFFFF,
+                                  .key = {}};
+                    memcpy(p.key, key, key_len);
+                    state_table_set_flow_data_variable(table,&p);
+                    break;}
+                case OPERAND_TYPE_GLOBAL_DATA_VAR:{
+                    table->global_data_var[act->output] = result1;
+                    OFL_LOG_DBG(LOG_MODULE, "Global data variable %d updated to %"PRIu32,act->output,table->global_data_var[act->output]);
+                    break;}
+            }
+
+            //result2 is written in operand_2
+            switch((act->operand_types>>12)&3){
+                case OPERAND_TYPE_FLOW_DATA_VAR:{
+                    struct ofl_exp_set_flow_data_variable p = (struct ofl_exp_set_flow_data_variable)
+                               {.table_id = pkt->table_id,
+                                  .flow_data_variable_id = act->operand_2,
+                                  .key_len = key_len,
+                                  .value = result2,
+                                  .mask = 0xFFFFFFFF,
+                                  .key = {}};
+                    memcpy(p.key, key, key_len);
+                    state_table_set_flow_data_variable(table,&p);
+                    break;}
+                case OPERAND_TYPE_GLOBAL_DATA_VAR:{
+                    table->global_data_var[act->operand_2] = result2;
+                    OFL_LOG_DBG(LOG_MODULE, "Global data variable %d updated to %"PRIu32,act->operand_2,table->global_data_var[act->operand_2]);
+                    break;}
+            }
+
+            //result3 is written in operand_3
+            switch((act->operand_types>>10)&3){
+                case OPERAND_TYPE_FLOW_DATA_VAR:{
+                    struct ofl_exp_set_flow_data_variable p = (struct ofl_exp_set_flow_data_variable)
+                               {.table_id = pkt->table_id,
+                                  .flow_data_variable_id = act->operand_3,
+                                  .key_len = key_len,
+                                  .value = result3,
+                                  .mask = 0xFFFFFFFF,
+                                  .key = {}};
+                    memcpy(p.key, key, key_len);
+                    state_table_set_flow_data_variable(table,&p);
+                    break;}
+                case OPERAND_TYPE_GLOBAL_DATA_VAR:{
+                    table->global_data_var[act->operand_3] = result3;
+                    OFL_LOG_DBG(LOG_MODULE, "Global data variable %d updated to %"PRIu32,act->operand_3,table->global_data_var[act->operand_3]);
+                    break;}
+            }
+            break;
+        }
 
     }
+    
+}
 
 ofl_err state_table_set_flow_data_variable(struct state_table *table, struct ofl_exp_set_flow_data_variable *p) {
     //TODO Davide: should we update timeouts? Or we should update them only for set flow state??

@@ -313,6 +313,9 @@ bool state_table_is_configured(struct state_table *table);
 struct state_entry *
 state_table_lookup(struct state_table*, struct packet *);
 
+struct state_entry *
+state_table_lookup_from_scope(struct state_table* table, struct packet *pkt, struct key_extractor* key_extract);
+
 void
 state_table_write_state(struct state_entry *, struct packet *);
 
@@ -332,7 +335,7 @@ void
 state_table_timeout(struct state_table *table);
 
 bool
-retrieve_condition_operand(uint32_t *operand_value, uint8_t operand_type, uint8_t operand_id, uint8_t operand_num, struct state_table *state_table, struct packet *pkt);
+retrieve_operand(uint32_t *operand_value, uint8_t operand_type, uint8_t operand_id, char * operand_name, struct state_table *table, struct packet *pkt, struct key_extractor *extractor);
 
 ofl_err
 state_table_set_condition(struct state_table *table, struct ofl_exp_set_condition *p);

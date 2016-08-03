@@ -206,13 +206,13 @@ pipeline_process_packet(struct pipeline *pl, struct packet *pkt)
                     *flags = (*flags & 0x00000000 ) | (pkt->dp->global_state);
         }
 
-	if (VLOG_IS_DBG_ENABLED(LOG_MODULE)) {
-		char *m = ofl_structs_match_to_string((struct ofl_match_header*)&(pkt->handle_std->match), pkt->dp->exp);
-		VLOG_DBG_RL(LOG_MODULE, &rl, "searching table entry in table %d for packet match: %s.", table->stats->table_id,m);
-		free(m);
-	}
+        if (VLOG_IS_DBG_ENABLED(LOG_MODULE)) {
+            char *m = ofl_structs_match_to_string((struct ofl_match_header*)&(pkt->handle_std->match), pkt->dp->exp);
+            VLOG_DBG_RL(LOG_MODULE, &rl, "searching table entry in table %d for packet match: %s.", table->stats->table_id,m);
+            free(m);
+        }
 
-	entry = flow_table_lookup(table, pkt, pkt->dp->exp);
+    entry = flow_table_lookup(table, pkt, pkt->dp->exp);
 
 
         if (entry != NULL) {

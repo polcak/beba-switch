@@ -101,8 +101,9 @@ dp_exp_action(struct packet *pkt, struct ofl_action_experimenter *act) {
                 struct ofl_exp_action_set_data_variable *act = (struct ofl_exp_action_set_data_variable *)action;
                 struct state_table *st = pkt->dp->pipeline->tables[act->table_id]->state_table;
                 
+                // Stage must be stateful, but we check if state_table_is_configured() only if output/operands are flow data variables.
+                // TODO Davide: state sync?
                 if (state_table_is_stateful(st)){
-                    //Here we check if state_table_is_configured() only if output/operands are flow data variables
                     VLOG_DBG_RL(LOG_MODULE, &rl, "executing action SET DATA VAR at stage %u", act->table_id);
                     state_table_set_data_variable(st, act, pkt);
                 }
