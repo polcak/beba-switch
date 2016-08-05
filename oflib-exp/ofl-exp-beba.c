@@ -2418,14 +2418,9 @@ void state_table_write_state(struct state_entry *entry, struct packet *pkt)
 }
 ofl_err state_table_del_state(struct state_table *table, uint8_t *key, uint32_t len) {
     struct state_entry *e;
-    int i;
     uint8_t found = 0;
-    uint32_t key_len=0; //update-scope key extractor length
-    struct key_extractor *extractor=&table->write_key;
-    for (i=0; i<extractor->field_count; i++) {
-        uint32_t type = (int)extractor->fields[i];
-        key_len = key_len + OXM_LENGTH(type);
-     }
+    uint32_t key_len = compute_key_len(&table->write_key); //update-scope key extractor length
+    
     if(key_len != len)
     {
         OFL_LOG_WARN(LOG_MODULE, "key extractor length != received key length");
@@ -2518,6 +2513,16 @@ ofl_err state_table_set_condition(struct state_table *table, struct ofl_exp_set_
     return 0;
 }
 
+uint32_t compute_key_len(struct key_extractor *extractor){
+    int i;
+    uint32_t type, key_len=0;
+    for (i=0; i<extractor->field_count; i++) {
+        type = (int)extractor->fields[i];
+        key_len = key_len + OXM_LENGTH(type);
+    }
+    return key_len;
+}
+
 void state_table_set_data_variable(struct state_table *table, struct ofl_exp_action_set_data_variable *act, struct packet *pkt) {
     // At unpack time we have checked just operands IDs validity. Now, at action execution time, we need to check if stage is
     // stateful and state table is configured.
@@ -2567,11 +2572,7 @@ void state_table_set_data_variable(struct state_table *table, struct ofl_exp_act
             extractor = &dummy_key_extract;
         }
 
-        for (i=0; i<extractor->field_count; i++) 
-        {
-            uint32_t type = (int)extractor->fields[i];
-            key_len = key_len + OXM_LENGTH(type);
-        }
+        key_len = compute_key_len(extractor); //update-scope key extractor length
 
         if(!__extract_key(key, extractor, pkt)){
             OFL_LOG_DBG(LOG_MODULE, "update key fields not found in the packet's header");
@@ -2868,14 +2869,7 @@ ofl_err state_table_set_flow_data_variable(struct state_table *table, struct ofl
     struct state_entry *e;
     uint64_t now;
     struct timeval tv;
-    int i;
-    uint32_t key_len=0; //update-scope key extractor length
-    struct key_extractor *extractor=&table->write_key;
-    for (i=0; i<extractor->field_count; i++) 
-    {
-        uint32_t type = (int)extractor->fields[i];
-        key_len = key_len + OXM_LENGTH(type);
-    }
+    uint32_t key_len = compute_key_len(&table->write_key); //update-scope key extractor length
     
     if(key_len == p->key_len)
     {
@@ -2937,8 +2931,8 @@ ofl_err state_table_set_state(struct state_table *table, struct packet *pkt,
 
     // State updates are based on the configured update-scope for both SET_STATE action and SET_FLOW_STATE msg...
     struct key_extractor *extractor=&table->write_key;
-    struct key_extractor dummy_key_extract;
     // ... but, in case of SET_STATE action, the update-scope might be specified in the action itself
+    struct key_extractor dummy_key_extract;
     if (pkt){
         //SET_STATE action
         if (act->field_count>0){
@@ -2956,13 +2950,9 @@ ofl_err state_table_set_state(struct state_table *table, struct packet *pkt,
             
             extractor = &dummy_key_extract;
         }
+    }
 
-    }
-    for (i=0; i<extractor->field_count; i++)
-    {
-        uint32_t type = (int)extractor->fields[i];
-        key_len = key_len + OXM_LENGTH(type);
-    }
+    key_len = compute_key_len(extractor); //update-scope key extractor length
 
     if (pkt)
     {
@@ -3318,10 +3308,10 @@ state_table_stats(struct state_table *table, struct ofl_exp_msg_multipart_reques
 {
     struct state_entry *entry;
     size_t  i;
-    uint32_t key_len = 0; //update-scope key extractor length
     uint32_t fields[OFPSC_MAX_FIELD_COUNT] = {0};
     struct timeval tv;
     struct key_extractor *extractor=&table->read_key;
+    uint32_t key_len = compute_key_len(extractor); //lookup-scope key extractor length
 
     struct ofl_match const * a = (struct ofl_match const *)msg->match;
     struct ofl_match_tlv *state_key_match;
@@ -3332,12 +3322,6 @@ state_table_stats(struct state_table *table, struct ofl_exp_msg_multipart_reques
 
     uint8_t offset[OFPSC_MAX_FIELD_COUNT] = {0};
     uint8_t length[OFPSC_MAX_FIELD_COUNT] = {0};
-
-
-    for (i=0; i<extractor->field_count; i++) {
-        fields[i] = (int)extractor->fields[i];
-        key_len = key_len + OXM_LENGTH(fields[i]);
-     }
 
     //for each received match_field we must verify if it can be found in the key extractor and (if yes) save its position in the key (offset) and its length
     HMAP_FOR_EACH(state_key_match, struct ofl_match_tlv, hmap_node, &a->match_fields)

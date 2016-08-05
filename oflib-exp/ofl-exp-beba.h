@@ -317,6 +317,9 @@ state_table_lookup_from_scope(struct state_table* table, struct packet *pkt, str
 void
 state_table_write_state(struct state_entry *, struct packet *);
 
+uint32_t
+compute_key_len(struct key_extractor *extractor);
+
 /*
  * State Sync: One extra argument (i.e., ntf_message) is passed at the end of this function.
  */
