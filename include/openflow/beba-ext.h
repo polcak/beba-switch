@@ -62,7 +62,8 @@ OFP_ASSERT(sizeof(struct ofp_exp_instruction_in_switch_pkt_gen) == 24);
 enum ofp_exp_actions {
     OFPAT_EXP_SET_STATE,
     OFPAT_EXP_SET_GLOBAL_STATE,
-    OFPAT_EXP_SET_DATA_VAR
+    OFPAT_EXP_SET_DATA_VAR,
+    OFPAT_EXP_WRITE_CONTEXT_TO_FIELD
 };
 
 struct ofp_beba_action_experimenter_header {
@@ -127,6 +128,16 @@ struct ofp_exp_action_set_data_variable {
     uint32_t fields[0]; // variable number of fields (sizeof() ignores flexible arrays)
 };
 OFP_ASSERT(sizeof(struct ofp_exp_action_set_data_variable) == 40);
+
+/* Action structure for OFPAT_EXP_WRITE_CONTEXT_TO_FIELD */
+struct ofp_exp_action_write_context_to_field {
+    struct ofp_beba_action_experimenter_header header;
+    uint8_t src_type;
+    uint8_t src_id;
+    uint8_t pad2[2];
+    uint32_t dst_field;   /* Align to 64-bits. */
+};
+OFP_ASSERT(sizeof(struct ofp_exp_action_write_context_to_field) == 24);
 
 /*EXPERIMENTER MESSAGES*/
 /*
