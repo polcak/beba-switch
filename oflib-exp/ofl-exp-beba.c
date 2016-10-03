@@ -3013,7 +3013,6 @@ ofl_err state_table_set_flow_data_variable(struct state_table *table, struct ofl
                 e->flow_data_var[p->flow_data_variable_id] = (e->flow_data_var[p->flow_data_variable_id] & ~(p->mask)) | (p->value & p->mask);
                 return 0;
             }
-            return 0;
     }
 
    
@@ -3184,7 +3183,6 @@ ofl_err state_table_set_state(struct state_table *table, struct packet *pkt,
 
                 return res;
             }
-        return 0;
     }
     
     gettimeofday(&tv,NULL);
